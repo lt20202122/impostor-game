@@ -8,11 +8,12 @@ const ollama = new Ollama({
   },
 });
 
+// Harder fallback words — abstract or less obvious concepts
 const FALLBACK_WORDS = [
-  'coffee', 'beach', 'guitar', 'library', 'pizza',
-  'forest', 'hospital', 'airplane', 'bicycle', 'mountain',
-  'ocean', 'candle', 'umbrella', 'telescope', 'lighthouse',
-  'compass', 'hammock', 'lantern', 'cactus', 'fountain',
+  'Labyrinth', 'Nostalgie', 'Quarantäne', 'Paradox', 'Periskop',
+  'Filibuster', 'Meridian', 'Archipel', 'Kathedrale', 'Karneval',
+  'Orakel', 'Tsunami', 'Hieroglyphe', 'Kolosseum', 'Souverän',
+  'Abgrund', 'Vulkan', 'Flüchtling', 'Klostergang', 'Sarkasmus',
 ];
 
 export async function POST() {
@@ -23,16 +24,19 @@ export async function POST() {
         {
           role: 'user',
           content:
-            'Generate a single common English noun for the Impostor word game. ' +
-            'It must be a concrete, everyday object or place that players can describe with one-word clues. ' +
-            'Respond with ONLY the single word in lowercase, no punctuation.',
+            'Generiere ein einziges deutsches Substantiv für das Impostor-Wortspiel. ' +
+            'Das Wort soll schwierig sein: kein alltäglicher Gegenstand, sondern eher ein Konzept, ' +
+            'ein Ort, ein Ereignis oder ein weniger gebräuchlicher Begriff, der trotzdem bekannt ist. ' +
+            'Beispiele für den gewünschten Schwierigkeitsgrad: Labyrinth, Nostalgie, Quarantäne, Archipel, Meridian. ' +
+            'Antworte NUR mit dem einzelnen Wort, ohne Artikel, ohne Satzzeichen.',
         },
       ],
     });
 
-    const raw = response.message.content.trim().toLowerCase();
-    const word = raw.split(/\s+/)[0].replace(/[^a-z]/g, '');
-    if (word.length < 2) throw new Error('bad word');
+    const raw = response.message.content.trim();
+    // Allow German chars, strip punctuation
+    const word = raw.split(/\s+/)[0].replace(/[^a-zA-ZäöüÄÖÜß]/g, '');
+    if (word.length < 3) throw new Error('bad word');
     return NextResponse.json({ word });
   } catch {
     const word = FALLBACK_WORDS[Math.floor(Math.random() * FALLBACK_WORDS.length)];

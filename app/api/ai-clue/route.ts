@@ -15,16 +15,22 @@ export async function POST(request: Request) {
 
   if (role === 'knows_word') {
     prompt =
-      `You are playing the Impostor word game. The secret word is "${secretWord}". ` +
-      `It is round ${round}. Other players have said: ${previousClues.length ? previousClues.join(', ') : 'nothing yet'}. ` +
-      `Give ONE single English word as a clue that is related to "${secretWord}" but not identical to it and not too obvious. ` +
-      `Do NOT repeat a word already said. Respond with ONLY that single lowercase word, no punctuation.`;
+      `Du spielst das Impostor-Wortspiel auf Deutsch. Das Geheimwort ist „${secretWord}". ` +
+      `Es ist Runde ${round}. Die anderen Spieler haben bisher gesagt: ${
+        previousClues.length ? previousClues.join(', ') : 'noch nichts'
+      }. ` +
+      `Gib EIN einziges deutsches Wort als Hinweis, das mit „${secretWord}" zusammenhängt, ` +
+      `aber nicht identisch damit ist und nicht zu offensichtlich. Wiederhole kein bereits genanntes Wort. ` +
+      `Antworte NUR mit dem einzelnen Wort in Kleinbuchstaben, ohne Satzzeichen.`;
   } else {
     prompt =
-      `You are playing the Impostor word game. You are the IMPOSTOR — you do NOT know the secret word. ` +
-      `It is round ${round}. Other players have said: ${previousClues.length ? previousClues.join(', ') : 'nothing yet'}. ` +
-      `Based on their clues, make your best guess about the theme and give ONE single English word that could plausibly fit in. ` +
-      `Try hard to blend in. Respond with ONLY that single lowercase word, no punctuation.`;
+      `Du spielst das Impostor-Wortspiel auf Deutsch. Du bist der IMPOSTOR – du kennst das Geheimwort NICHT. ` +
+      `Es ist Runde ${round}. Die anderen Spieler haben bisher gesagt: ${
+        previousClues.length ? previousClues.join(', ') : 'noch nichts'
+      }. ` +
+      `Schätze anhand dieser Hinweise, welches Thema gemeint sein könnte, und gib EIN einziges deutsches Wort, ` +
+      `das plausibel zum Thema passt. Versuche, nicht aufzufallen. ` +
+      `Antworte NUR mit dem einzelnen Wort in Kleinbuchstaben, ohne Satzzeichen.`;
   }
 
   try {
@@ -34,11 +40,11 @@ export async function POST(request: Request) {
     });
 
     const raw = response.message.content.trim().toLowerCase();
-    const clue = raw.split(/\s+/)[0].replace(/[^a-z]/g, '');
+    const clue = raw.split(/\s+/)[0].replace(/[^a-zA-ZäöüÄÖÜß]/g, '');
     if (clue.length < 2) throw new Error('bad clue');
     return NextResponse.json({ clue });
   } catch {
-    const fallbacks = ['intriguing', 'mysterious', 'curious', 'interesting', 'familiar'];
+    const fallbacks = ['rätselhaft', 'interessant', 'vertraut', 'merkwürdig', 'seltsam'];
     return NextResponse.json({ clue: fallbacks[Math.floor(Math.random() * fallbacks.length)] });
   }
 }

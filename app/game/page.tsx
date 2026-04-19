@@ -12,9 +12,11 @@ type Phase =
   | 'pass-to-1'
   | 'show-role-1'
   | 'round-input'
-  | 'round-ai'         // AI is fetching its clue
-  | 'round-ai-reveal'  // Show AI's clue to everyone before continuing
-  | 'round-transition'
+  | 'round-ai'          // AI fetching its clue
+  | 'round-ai-reveal'   // Everyone sees the AI's clue
+  | 'round-transition'  // Phone-pass screen between players
+  | 'ai-voting'         // AI deliberating who the impostor is
+  | 'ai-verdict'        // AI reveals its accusation
   | 'results';
 
 interface ClueEntry {
@@ -29,16 +31,17 @@ interface GameState {
   p2Name: string;
   aiName: string;
   secretWord: string;
-  impostorIndex: number; // 0=P1, 1=P2, 2=AI
+  impostorIndex: number; // 0=P1, 1=P2, 2=AI — set once in startGame, never mutated
   phase: Phase;
   clues: ClueEntry[][];  // clues[round][entry]
   currentRound: number;
   currentPlayerInRound: number;
   inputValue: string;
   error: string;
-  // After AI round: pending state to display before advancing
   pendingNextRound: number;
   pendingGoToResults: boolean;
+  aiAccusedName: string;
+  aiReasoning: string;
 }
 
 const INITIAL: GameState = {
@@ -46,7 +49,7 @@ const INITIAL: GameState = {
   p2Name: '',
   aiName: 'HAL-9000',
   secretWord: '',
-  impostorIndex: 0,
+  impostorIndex: -1,
   phase: 'setup',
   clues: [[], []],
   currentRound: 0,
@@ -55,14 +58,26 @@ const INITIAL: GameState = {
   error: '',
   pendingNextRound: 0,
   pendingGoToResults: false,
+  aiAccusedName: '',
+  aiReasoning: '',
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function playerName(state: GameState, idx: number) {
+function pName(state: GameState, idx: number) {
   if (idx === 0) return state.p1Name || 'Spieler 1';
   if (idx === 1) return state.p2Name || 'Spieler 2';
   return state.aiName;
+}
+
+function gatherCluesByPlayer(state: GameState) {
+  const players = [pName(state, 0), pName(state, 1), state.aiName];
+  return players.map((name) => ({
+    name,
+    clues: state.clues.flatMap((round) =>
+      round.filter((c) => c.name === name).map((c) => c.clue)
+    ),
+  }));
 }
 
 // ── Component ──────────────────────────────────────────────────────────────
@@ -85,15 +100,16 @@ export default function GamePage() {
       update({ error: 'Die Spielernamen müssen unterschiedlich sein.' });
       return;
     }
-    update({ error: '', phase: 'generating' });
+
+    // Pick impostor BEFORE any async work so it's not affected by re-renders
+    const impostorIndex = Math.floor(Math.random() * 3);
+    update({ error: '', phase: 'generating', impostorIndex });
 
     try {
       const res = await fetch('/api/generate-word', { method: 'POST' });
       const { word } = await res.json();
-      const impostorIndex = Math.floor(Math.random() * 3);
       update({
         secretWord: word,
-        impostorIndex,
         clues: [[], []],
         currentRound: 0,
         currentPlayerInRound: 0,
@@ -127,20 +143,25 @@ export default function GamePage() {
       return;
     }
 
+    // Snapshot values now (before any setS) to avoid closure staleness
+    const snapImpostorIndex = s.impostorIndex;
+    const snapRound = s.currentRound;
+    const snapAiName = s.aiName;
+    const snapSecretWord = s.secretWord;
+
     const entry: ClueEntry = {
-      name: playerName(s, s.currentPlayerInRound),
+      name: pName(s, s.currentPlayerInRound),
       clue,
       isAI: false,
-      isImpostor: s.currentPlayerInRound === s.impostorIndex,
+      isImpostor: s.currentPlayerInRound === snapImpostorIndex,
     };
 
     const newClues = s.clues.map((r, i) =>
-      i === s.currentRound ? [...r, entry] : r
+      i === snapRound ? [...r, entry] : r
     );
     const nextPlayer = s.currentPlayerInRound + 1;
 
     if (nextPlayer === 2) {
-      // AI's turn
       setS((prev) => ({
         ...prev,
         clues: newClues,
@@ -149,7 +170,8 @@ export default function GamePage() {
         currentPlayerInRound: 2,
         phase: 'round-ai',
       }));
-      fetchAIClue(newClues, s.currentRound);
+      // Pass ALL needed values explicitly — no closure dependency on `s`
+      fetchAIClue(newClues, snapRound, snapImpostorIndex, snapSecretWord, snapAiName);
     } else {
       setS((prev) => ({
         ...prev,
@@ -162,13 +184,16 @@ export default function GamePage() {
     }
   }
 
-  async function fetchAIClue(clues: ClueEntry[][], round: number) {
-    // Capture the stable values we need from current state
-    const role = s.impostorIndex === 2 ? 'impostor' : 'knows_word';
+  // All values are passed explicitly — no stale closure risk
+  async function fetchAIClue(
+    clues: ClueEntry[][],
+    round: number,
+    impostorIndex: number,
+    secretWord: string,
+    aiName: string,
+  ) {
+    const role = impostorIndex === 2 ? 'impostor' : 'knows_word';
     const prevClues = clues[round].filter((c) => !c.isAI).map((c) => c.clue);
-    const aiName = s.aiName;
-    const secretWord = s.secretWord;
-    const impostorIndex = s.impostorIndex;
 
     let clue = 'rätselhaft';
     try {
@@ -178,10 +203,8 @@ export default function GamePage() {
         body: JSON.stringify({ role, secretWord, previousClues: prevClues, round: round + 1 }),
       });
       const data = await res.json();
-      if (data.clue && data.clue.length >= 2) clue = data.clue;
-    } catch {
-      // use fallback
-    }
+      if (data.clue?.length >= 2) clue = data.clue;
+    } catch { /* use fallback */ }
 
     const entry: ClueEntry = {
       name: aiName,
@@ -193,7 +216,6 @@ export default function GamePage() {
     const newClues = clues.map((r, i) => (i === round ? [...r, entry] : r));
     const nextRound = round + 1;
 
-    // Go to reveal phase so everyone can see what the AI said
     setS((prev) => ({
       ...prev,
       clues: newClues,
@@ -205,13 +227,59 @@ export default function GamePage() {
 
   function continueAfterAIReveal() {
     if (s.pendingGoToResults) {
-      update({ phase: 'results' });
+      // Last round done — now the AI votes
+      const snapImpostorIndex = s.impostorIndex;
+      const snapSecretWord = s.secretWord;
+      const snapAiName = s.aiName;
+      update({ phase: 'ai-voting' });
+      fetchAIVote(s, snapImpostorIndex, snapSecretWord, snapAiName);
     } else {
       update({
         phase: 'round-transition',
         currentRound: s.pendingNextRound,
         currentPlayerInRound: 0,
       });
+    }
+  }
+
+  async function fetchAIVote(
+    currentState: GameState,
+    impostorIndex: number,
+    secretWord: string,
+    aiName: string,
+  ) {
+    const role = impostorIndex === 2 ? 'impostor' : 'knows_word';
+    const allClues = gatherCluesByPlayer(currentState);
+    const p1 = currentState.p1Name || 'Spieler 1';
+    const p2 = currentState.p2Name || 'Spieler 2';
+
+    try {
+      const res = await fetch('/api/ai-vote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role, secretWord, allClues, aiName }),
+      });
+      const { accusedName, reasoning } = await res.json();
+
+      // Safety: AI must not accuse itself
+      let safeName = accusedName;
+      if (!safeName || safeName.toLowerCase() === aiName.toLowerCase()) {
+        safeName = p1;
+      }
+
+      setS((prev) => ({
+        ...prev,
+        aiAccusedName: safeName,
+        aiReasoning: reasoning,
+        phase: 'ai-verdict',
+      }));
+    } catch {
+      setS((prev) => ({
+        ...prev,
+        aiAccusedName: p1,
+        aiReasoning: 'Die Hinweise dieses Spielers wirkten unspezifisch und verdächtig.',
+        phase: 'ai-verdict',
+      }));
     }
   }
 
@@ -222,8 +290,6 @@ export default function GamePage() {
   function playAgain() {
     setS({ ...INITIAL, p1Name: s.p1Name, p2Name: s.p2Name, aiName: s.aiName });
   }
-
-  const isImpostor = (idx: number) => s.impostorIndex === idx;
 
   // ── Screens ───────────────────────────────────────────────────────────
 
@@ -267,7 +333,7 @@ export default function GamePage() {
           <div className="text-zinc-500 text-xs text-center space-y-1.5">
             <p>• 3 Spieler: du, dein Freund und eine KI</p>
             <p>• 2 Runden mit je einem Hinweiswort</p>
-            <p>• Kannst du den Impostor entlarven?</p>
+            <p>• Die KI stimmt am Ende ab, wer der Impostor ist</p>
           </div>
         </div>
       </Screen>
@@ -293,8 +359,8 @@ export default function GamePage() {
         <div className="fade-up w-full max-w-sm mx-auto flex flex-col gap-6 text-center">
           <div className="text-5xl">📱</div>
           <div>
-            <p className="text-zinc-400 text-sm uppercase tracking-widest mb-2">Gib das Handy an</p>
-            <h2 className="text-4xl font-bold">{playerName(s, idx)}</h2>
+            <p className="text-zinc-400 text-xs uppercase tracking-widest mb-2">Gib das Handy an</p>
+            <h2 className="text-4xl font-bold">{pName(s, idx)}</h2>
             <p className="text-zinc-400 text-sm mt-1">weiter</p>
           </div>
           <p className="text-zinc-500 text-sm">Niemand sonst darf zuschauen!</p>
@@ -309,8 +375,8 @@ export default function GamePage() {
     return (
       <Screen>
         <RoleReveal
-          name={playerName(s, idx)}
-          isImpostor={isImpostor(idx)}
+          name={pName(s, idx)}
+          isImpostor={s.impostorIndex === idx}
           word={s.secretWord}
           onDone={() => doneRevealing(idx as 0 | 1)}
         />
@@ -330,8 +396,8 @@ export default function GamePage() {
           )}
           <div className="text-5xl">📱</div>
           <div>
-            <p className="text-zinc-400 text-sm uppercase tracking-widest mb-2">Gib das Handy an</p>
-            <h2 className="text-4xl font-bold">{playerName(s, s.currentPlayerInRound)}</h2>
+            <p className="text-zinc-400 text-xs uppercase tracking-widest mb-2">Gib das Handy an</p>
+            <h2 className="text-4xl font-bold">{pName(s, s.currentPlayerInRound)}</h2>
             <p className="text-zinc-400 text-sm mt-1">weiter</p>
           </div>
           <p className="text-zinc-500 text-sm">Du bist als Nächstes mit einem Hinweis dran</p>
@@ -342,8 +408,8 @@ export default function GamePage() {
   }
 
   if (s.phase === 'round-input') {
-    const name = playerName(s, s.currentPlayerInRound);
-    const imp = isImpostor(s.currentPlayerInRound);
+    const name = pName(s, s.currentPlayerInRound);
+    const imp = s.currentPlayerInRound === s.impostorIndex;
     return (
       <Screen>
         <div className="fade-up w-full max-w-sm mx-auto flex flex-col gap-5">
@@ -353,8 +419,8 @@ export default function GamePage() {
             </div>
             <h2 className="text-2xl font-bold">{name} ist dran</h2>
             {imp ? (
-              <p className="text-red-400 text-sm mt-1">
-                Du bist der Impostor – versuche, nicht aufzufallen!
+              <p className="text-red-400 text-sm mt-1 font-medium">
+                🕵️ Du bist der Impostor – versuche, nicht aufzufallen!
               </p>
             ) : (
               <p className="text-zinc-400 text-sm mt-1">
@@ -434,7 +500,9 @@ export default function GamePage() {
         <div className="fade-up w-full max-w-sm mx-auto flex flex-col gap-6 text-center">
           <div>
             <div className="text-5xl mb-3">🤖</div>
-            <p className="text-zinc-400 text-sm uppercase tracking-widest mb-1">{s.aiName} hat getippt</p>
+            <p className="text-zinc-400 text-xs uppercase tracking-widest mb-1">
+              {s.aiName} hat getippt
+            </p>
             <p className="text-5xl font-black text-violet-300 mt-2">{aiEntry?.clue ?? '?'}</p>
           </div>
 
@@ -455,15 +523,61 @@ export default function GamePage() {
           </div>
 
           <Btn onClick={continueAfterAIReveal}>
-            {s.pendingGoToResults ? 'Ergebnis anzeigen' : 'Nächste Runde →'}
+            {s.pendingGoToResults ? 'KI stimmt ab →' : 'Nächste Runde →'}
           </Btn>
         </div>
       </Screen>
     );
   }
 
+  if (s.phase === 'ai-voting') {
+    return (
+      <Screen>
+        <div className="text-center fade-up flex flex-col items-center gap-5">
+          <div className="text-6xl pulse-slow">🤔</div>
+          <div>
+            <h2 className="text-2xl font-bold">{s.aiName} überlegt…</h2>
+            <p className="text-zinc-400 text-sm mt-1">Wer ist der Impostor?</p>
+          </div>
+          <div className="text-zinc-500 text-xs text-center space-y-1 max-w-xs">
+            <p>Die KI analysiert alle Hinweise</p>
+            <p>und entscheidet, wen sie verdächtigt.</p>
+          </div>
+        </div>
+      </Screen>
+    );
+  }
+
+  if (s.phase === 'ai-verdict') {
+    return (
+      <Screen>
+        <div className="fade-up w-full max-w-sm mx-auto flex flex-col gap-6 text-center">
+          <div>
+            <div className="text-5xl mb-3">🤖</div>
+            <h2 className="text-2xl font-bold">Das Urteil der KI</h2>
+          </div>
+
+          <div className="bg-amber-900/40 border border-amber-600 rounded-2xl p-6">
+            <p className="text-amber-300 text-xs uppercase tracking-widest mb-2">
+              {s.aiName} verdächtigt
+            </p>
+            <p className="text-4xl font-black text-amber-200">{s.aiAccusedName}</p>
+          </div>
+
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-left">
+            <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">Begründung</p>
+            <p className="text-sm text-zinc-300 leading-relaxed">{s.aiReasoning}</p>
+          </div>
+
+          <Btn onClick={() => update({ phase: 'results' })}>Ergebnis anzeigen</Btn>
+        </div>
+      </Screen>
+    );
+  }
+
   if (s.phase === 'results') {
-    const impostorName = playerName(s, s.impostorIndex);
+    const impostorName = pName(s, s.impostorIndex);
+    const aiWasRight = s.aiAccusedName === impostorName;
     return (
       <Screen>
         <div className="fade-up w-full max-w-sm mx-auto flex flex-col gap-5 pb-8">
@@ -472,11 +586,13 @@ export default function GamePage() {
             <h1 className="text-3xl font-bold">Spiel vorbei!</h1>
           </div>
 
+          {/* Secret word */}
           <div className="bg-violet-900/40 border border-violet-700 rounded-2xl p-5 text-center">
             <p className="text-zinc-400 text-xs uppercase tracking-widest mb-1">Das Geheimwort war</p>
             <p className="text-4xl font-black text-violet-300">„{s.secretWord}"</p>
           </div>
 
+          {/* Impostor reveal */}
           <div className="bg-red-900/40 border border-red-700 rounded-2xl p-5 text-center">
             <p className="text-zinc-400 text-xs uppercase tracking-widest mb-1">Der Impostor war</p>
             <p className="text-4xl font-black text-red-400">{impostorName}</p>
@@ -487,6 +603,23 @@ export default function GamePage() {
             </p>
           </div>
 
+          {/* AI verdict vs truth */}
+          <div
+            className={`rounded-2xl p-4 text-center border ${
+              aiWasRight
+                ? 'bg-green-900/40 border-green-700'
+                : 'bg-zinc-900 border-zinc-800'
+            }`}
+          >
+            <p className="text-xs text-zinc-400 uppercase tracking-wider mb-1">
+              KI-Tipp: {s.aiAccusedName}
+            </p>
+            <p className={`font-bold text-sm ${aiWasRight ? 'text-green-400' : 'text-zinc-400'}`}>
+              {aiWasRight ? '✓ Die KI lag richtig!' : '✗ Die KI lag falsch.'}
+            </p>
+          </div>
+
+          {/* All clues */}
           <div className="flex flex-col gap-3">
             {(['Runde 1', 'Runde 2'] as const).map((label, ri) => (
               <div key={ri} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
@@ -537,20 +670,15 @@ function Screen({ children }: { children: React.ReactNode }) {
 function Btn({
   onClick,
   children,
-  variant = 'primary',
 }: {
   onClick: () => void;
   children: React.ReactNode;
-  variant?: 'primary' | 'secondary';
 }) {
-  const base =
-    'w-full py-4 px-6 rounded-2xl font-semibold text-base active:scale-95 transition-all duration-150 cursor-pointer';
-  const styles = {
-    primary: `${base} bg-violet-600 hover:bg-violet-500 text-white`,
-    secondary: `${base} bg-zinc-800 hover:bg-zinc-700 text-zinc-200`,
-  };
   return (
-    <button className={styles[variant]} onClick={onClick}>
+    <button
+      className="w-full py-4 px-6 rounded-2xl font-semibold text-base bg-violet-600 hover:bg-violet-500 text-white active:scale-95 transition-all duration-150 cursor-pointer"
+      onClick={onClick}
+    >
       {children}
     </button>
   );

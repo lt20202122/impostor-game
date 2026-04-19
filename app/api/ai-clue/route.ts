@@ -33,6 +33,14 @@ export async function POST(request: Request) {
       `Antworte NUR mit dem einzelnen Wort in Kleinbuchstaben, ohne Satzzeichen.`;
   }
 
+  // Large, varied fallback pool — indexed by Date.now() to avoid serverless seed bias
+  const FALLBACKS = [
+    'kühl', 'eng', 'glatt', 'dunkel', 'leise', 'scharf', 'warm', 'hoch',
+    'breit', 'alt', 'neu', 'groß', 'schnell', 'tief', 'flach', 'rund',
+    'weich', 'hart', 'leer', 'voll', 'nass', 'trocken', 'blank', 'dicht',
+    'weit', 'eng', 'schwer', 'leicht', 'klar', 'trüb', 'rau', 'fein',
+  ];
+
   try {
     const response = await ollama.chat({
       model: 'gpt-oss:120b',
@@ -40,11 +48,18 @@ export async function POST(request: Request) {
     });
 
     const raw = response.message.content.trim().toLowerCase();
-    const clue = raw.split(/\s+/)[0].replace(/[^a-zA-ZäöüÄÖÜß]/g, '');
-    if (clue.length < 2) throw new Error('bad clue');
-    return NextResponse.json({ clue });
+    // Try each whitespace-separated token until we find a valid single German word
+    const tokens = raw.split(/\s+/);
+    for (const token of tokens) {
+      const word = token.replace(/[^a-zäöüß]/g, '');
+      if (word.length >= 3 && word.length <= 20) {
+        return NextResponse.json({ clue: word });
+      }
+    }
+    throw new Error('no valid word in response');
   } catch {
-    const fallbacks = ['rätselhaft', 'interessant', 'vertraut', 'merkwürdig', 'seltsam'];
-    return NextResponse.json({ clue: fallbacks[Math.floor(Math.random() * fallbacks.length)] });
+    // Use Date.now() for index entropy — avoids predictable serverless Math.random() seeds
+    const idx = Date.now() % FALLBACKS.length;
+    return NextResponse.json({ clue: FALLBACKS[idx] });
   }
 }

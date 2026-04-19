@@ -101,20 +101,25 @@ export default function GamePage() {
       return;
     }
 
-    // Pick impostor BEFORE any async work so it's not affected by re-renders
-    const impostorIndex = Math.floor(Math.random() * 3);
-    update({ error: '', phase: 'generating', impostorIndex });
+    update({ error: '', phase: 'generating' });
 
     try {
       const res = await fetch('/api/generate-word', { method: 'POST' });
       const { word } = await res.json();
-      update({
+      // Compute impostorIndex HERE and set it atomically with secretWord in one update.
+      // Splitting across two updates risks the second update's functional `prev` reading
+      // the pre-first-update state (React 18 batching edge case), leaving impostorIndex = -1.
+      const impostorIndex = Math.floor(Math.random() * 3);
+      setS((prev) => ({
+        ...prev,
         secretWord: word,
+        impostorIndex,
         clues: [[], []],
         currentRound: 0,
         currentPlayerInRound: 0,
         phase: 'pass-to-0',
-      });
+        error: '',
+      }));
     } catch {
       update({ error: 'Fehler beim Generieren des Worts. Bitte erneut versuchen.', phase: 'setup' });
     }

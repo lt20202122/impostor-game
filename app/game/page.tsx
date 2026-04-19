@@ -437,14 +437,9 @@ export default function GamePage() {
               Runde {s.currentRound + 1} von 2
             </div>
             <h2 className="text-2xl font-bold">{name} ist dran</h2>
-            {imp ? (
+            {imp && (
               <p className="text-red-400 text-sm mt-1 font-medium">
                 🕵️ Du bist der Impostor – versuche, nicht aufzufallen!
-              </p>
-            ) : (
-              <p className="text-zinc-400 text-sm mt-1">
-                Das Wort lautet{' '}
-                <span className="font-bold text-white">„{s.secretWord}"</span>
               </p>
             )}
           </div>

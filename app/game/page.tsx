@@ -31,11 +31,12 @@ interface GameState {
   p2Name: string;
   aiName: string;
   secretWord: string;
-  impostorIndex: number; // 0=P1, 1=P2, 2=AI — set once in startGame, never mutated
+  impostorIndex: number;              // 0=P1, 1=P2, 2=AI — set once, never mutated
+  turnOrder: [number, number, number]; // shuffled clue order, e.g. [1, 0, 2]
   phase: Phase;
-  clues: ClueEntry[][];  // clues[round][entry]
+  clues: ClueEntry[][];               // clues[round][entry]
   currentRound: number;
-  currentPlayerInRound: number;
+  currentPlayerInRound: number;       // actual player index (0,1,2), not position
   inputValue: string;
   error: string;
   pendingNextRound: number;
@@ -50,6 +51,7 @@ const INITIAL: GameState = {
   aiName: 'HAL-9000',
   secretWord: '',
   impostorIndex: -1,
+  turnOrder: [0, 1, 2],
   phase: 'setup',
   clues: [[], []],
   currentRound: 0,
@@ -106,17 +108,21 @@ export default function GamePage() {
     try {
       const res = await fetch('/api/generate-word', { method: 'POST' });
       const { word } = await res.json();
-      // Compute impostorIndex HERE and set it atomically with secretWord in one update.
+      // Compute impostorIndex and turnOrder atomically with secretWord.
       // Splitting across two updates risks the second update's functional `prev` reading
       // the pre-first-update state (React 18 batching edge case), leaving impostorIndex = -1.
       const impostorIndex = Math.floor(Math.random() * 3);
+      // Shuffle the two humans; AI always goes last so the round-ai-reveal logic stays simple
+      const humanFirst = Math.random() < 0.5 ? 0 : 1;
+      const turnOrder: [number, number, number] = [humanFirst, humanFirst === 0 ? 1 : 0, 2];
       setS((prev) => ({
         ...prev,
         secretWord: word,
         impostorIndex,
+        turnOrder,
         clues: [[], []],
         currentRound: 0,
-        currentPlayerInRound: 0,
+        currentPlayerInRound: turnOrder[0], // first to give a clue
         phase: 'pass-to-0',
         error: '',
       }));
@@ -135,7 +141,8 @@ export default function GamePage() {
     if (playerIdx === 0) {
       update({ phase: 'pass-to-1' });
     } else {
-      update({ phase: 'round-input', currentRound: 0, currentPlayerInRound: 0 });
+      // First clue-giver is turnOrder[0]; currentPlayerInRound was already set in startGame
+      update({ phase: 'round-input', currentRound: 0 });
     }
   }
 
@@ -153,6 +160,7 @@ export default function GamePage() {
     const snapRound = s.currentRound;
     const snapAiName = s.aiName;
     const snapSecretWord = s.secretWord;
+    const snapTurnOrder = s.turnOrder;
 
     const entry: ClueEntry = {
       name: pName(s, s.currentPlayerInRound),
@@ -164,9 +172,14 @@ export default function GamePage() {
     const newClues = s.clues.map((r, i) =>
       i === snapRound ? [...r, entry] : r
     );
-    const nextPlayer = s.currentPlayerInRound + 1;
+
+    // Advance through turnOrder — find current position, step to next
+    const currentPos = snapTurnOrder.indexOf(s.currentPlayerInRound);
+    const nextPos = currentPos + 1;
+    const nextPlayer = nextPos < 3 ? snapTurnOrder[nextPos] : -1;
 
     if (nextPlayer === 2) {
+      // AI's turn
       setS((prev) => ({
         ...prev,
         clues: newClues,
@@ -175,9 +188,9 @@ export default function GamePage() {
         currentPlayerInRound: 2,
         phase: 'round-ai',
       }));
-      // Pass ALL needed values explicitly — no closure dependency on `s`
       fetchAIClue(newClues, snapRound, snapImpostorIndex, snapSecretWord, snapAiName);
-    } else {
+    } else if (nextPlayer !== -1) {
+      // Next human's turn
       setS((prev) => ({
         ...prev,
         clues: newClues,
@@ -239,10 +252,11 @@ export default function GamePage() {
       update({ phase: 'ai-voting' });
       fetchAIVote(s, snapImpostorIndex, snapSecretWord, snapAiName);
     } else {
+      // Start next round with the first player in turnOrder
       update({
         phase: 'round-transition',
         currentRound: s.pendingNextRound,
-        currentPlayerInRound: 0,
+        currentPlayerInRound: s.turnOrder[0],
       });
     }
   }
@@ -293,7 +307,7 @@ export default function GamePage() {
   }
 
   function playAgain() {
-    setS({ ...INITIAL, p1Name: s.p1Name, p2Name: s.p2Name, aiName: s.aiName });
+    setS({ ...INITIAL, p1Name: s.p1Name, p2Name: s.p2Name, aiName: s.aiName, turnOrder: [0, 1, 2] });
   }
 
   // ── Screens ───────────────────────────────────────────────────────────
